@@ -175,6 +175,7 @@ RAC_GET如下
 [self GET:urlString parameters:params responseKeys:nil autoRun:YES progress:nil completion:^(BOOL success, id userinfo)
 调用的是 GFHTTPManger 网络管理类下的一个GET请求方法。
 ```
+
 ```
 [subscriber sendNext:userinfo];
 [subscriber sendCompleted];
@@ -182,7 +183,7 @@ RAC_GET如下
 ```
 然后写好了接口类。如何调用呢。
 
-``
+``` ddd
 @interface WeiBoContentViewModel()
 
 
@@ -218,6 +219,7 @@ RAC_GET如下
      }];
 }
 ```
+
 ```
 json格式如下
 "response": {
