@@ -82,5 +82,186 @@ reduce:^(NSString *username, NSString *password) {
 通过上一步产生信号的usernameTextField,passwordTextField获取其中输入的值，然后判断当前的输入是否合法。
 ```
 RAC(self.logInButton, enabled)接受返回值。判断当前按钮是否可以被点击。这样是不是明朗了很多。如果采用常规的做法。需要遵循响应的代理，然后从代理中获取当前的值。每当textField的值改变的时候做一次判断。同时当前textField有两个。需要用tag来区分。这样看起来。是不是简单了很多。
+然后我们看一下RAC的源文件
 
+```
+├── UIActionSheet+RACSignalSupport.h
+├── UIActionSheet+RACSignalSupport.m
+├── UIAlertView+RACSignalSupport.h
+├── UIAlertView+RACSignalSupport.m
+├── UIBarButtonItem+RACCommandSupport.h
+├── UIBarButtonItem+RACCommandSupport.m
+├── UIButton+RACCommandSupport.h
+├── UIButton+RACCommandSupport.m
+├── UICollectionReusableView+RACSignalSupport.h
+├── UICollectionReusableView+RACSignalSupport.m
+├── UIControl+RACSignalSupport.h
+├── UIControl+RACSignalSupport.m
+├── UIControl+RACSignalSupportPrivate.h
+├── UIControl+RACSignalSupportPrivate.m
+├── UIDatePicker+RACSignalSupport.h
+├── UIDatePicker+RACSignalSupport.m
+├── UIGestureRecognizer+RACSignalSupport.h
+├── UIGestureRecognizer+RACSignalSupport.m
+├── UIImagePickerController+RACSignalSupport.h
+├── UIImagePickerController+RACSignalSupport.m
+├── UIRefreshControl+RACCommandSupport.h
+├── UIRefreshControl+RACCommandSupport.m
+├── UISegmentedControl+RACSignalSupport.h
+├── UISegmentedControl+RACSignalSupport.m
+├── UISlider+RACSignalSupport.h
+├── UISlider+RACSignalSupport.m
+├── UIStepper+RACSignalSupport.h
+├── UIStepper+RACSignalSupport.m
+├── UISwitch+RACSignalSupport.h
+├── UISwitch+RACSignalSupport.m
+├── UITableViewCell+RACSignalSupport.h
+├── UITableViewCell+RACSignalSupport.m
+├── UITableViewHeaderFooterView+RACSignalSupport.h
+├── UITableViewHeaderFooterView+RACSignalSupport.m
+├── UITextField+RACSignalSupport.h
+├── UITextField+RACSignalSupport.m
+├── UITextView+RACSignalSupport.h
+├── UITextView+RACSignalSupport.m
+```
+刚刚用到的是UITextField。打开看一下UITextField.
+
+```
+- (RACSignal *)rac_textSignal {
+	@weakify(self);
+	return [[[[[RACSignal
+		defer:^{
+			@strongify(self);
+			return [RACSignal return:self];
+		}]
+		concat:[self rac_signalForControlEvents:UIControlEventAllEditingEvents]]
+		map:^(UITextField *x) {
+			return x.text;
+		}]
+		takeUntil:self.rac_willDeallocSignal]
+		setNameWithFormat:@"%@ -rac_textSignal", self.rac_description];
+}
+
+```
+defer是RACSignal的一个类方法。返回的一个延迟的信号。如果不被订阅，就是冷信号。订阅则成为热信号。
+
+concat连接的是UITextFiled的UIControlEventAllEditingEvents信号。
+
+map是把当前信号映射成为x.text。
+
+takeUntil。看名字大概能看懂，就是在某个事件之前一直获取当前信号。rac_willDeallocSignal。。意思是在UITextField销毁之前一直获取当前输入信号。
+这样来分析UITextField，大概就会明朗了很多。
+####信号使用场景一。
+例如我们在网络上获取一列数据，而后我们需要展示在cell上。what should i do ?
+RAC_GET如下
+
+```
+@implementation GFHTTPManger (Uniform)
+
++ (RACSignal *)rac_get:(NSString *)urlString params:(NSDictionary *)params {
+    return [[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
+        NSURLSessionTask *task = [self GET:urlString parameters:params responseKeys:nil autoRun:YES progress:nil completion:^(BOOL success, id userinfo) {
+            [subscriber sendNext:userinfo];
+            [subscriber sendCompleted];
+        }];
+        return [RACDisposable disposableWithBlock:^{
+            [task cancel];
+        }];
+    }] replayLazily];
+}
+@end
+```
+```
+[self GET:urlString parameters:params responseKeys:nil autoRun:YES progress:nil completion:^(BOOL success, id userinfo)
+调用的是 GFHTTPManger 网络管理类下的一个GET请求方法。
+```
+```
+[subscriber sendNext:userinfo];
+[subscriber sendCompleted];
+将当前信号转化为热信号。发送给订阅者。userinfo是当前用户请求成功之后获取到的数据。做为参数传递给订阅者。
+```
+然后写好了接口类。如何调用呢。
+
+``
+@interface WeiBoContentViewModel()
+
+
+@property (nonatomic, readwrite) BOOL shouldReloadData;
+
+@property (nonatomic, strong, readwrite) NSArray *weiboArray;
+
+@property (nonatomic, strong, readwrite) NSArray *weiboCommentArray;
+
+@end
+
+@implementation WeiBoContentViewModel
+
+- (void)requestRemoteWeiBo {
+    @weakify(self)
+    [[[[GFHTTPManger rac_get:@"/weibo/Weiboc/getWeiboList" params:nil]
+       filter:^BOOL(NSDictionary *value) {
+           NSDictionary *dictTmp = [value objectForKey:@"response"];
+           return [[dictTmp objectForKey:@"status"] isEqualToString:@"success"];
+       }]
+      map:^id(NSDictionary *value) {
+          @strongify(self)
+          NSDictionary *responseDict = [value objectForKey:@"response"];
+          NSDictionary *dataDict = [responseDict objectForKey:@"data"];
+          NSArray *notificationArray = [dataDict objectForKey:@"WeiboListInfo"];
+          return [self formatData:notificationArray]; //格式化当前json转化为模型数组。
+      }]
+     subscribeNext:^(NSArray *x) {
+         @strongify(self)
+         self.weiboArray = [x copy];
+         self.shouldReloadData = x.count;
+         
+     }];
+}
+```
+```
+json格式如下
+"response": {
+        "status": "success",
+        "code": 1,
+        "data": {
+            "WeiboListInfo": [
+                {
+                    "id": "24",
+                    "uid": "-1",
+                    "content": "Hello ",
+                    "comment_count": "0",
+                    "repost_count": "0",
+                    "create_time": "1465727950",
+                    "WeiboCommentList": {
+                        "WeiboCommentListInfo": [
+                            {
+                                "id": "8",
+                                "uid": "-1",
+                                "weibo_id": "24",
+                                "content": "Hello",
+                                "create_time": "1465781699",
+                                "status": "1",
+                                "to_comment_id": "0"
+                            },
+                            {
+                                "id": "7",
+                                "uid": "-1",
+                                "weibo_id": "24",
+                                "content": "hello",
+                                "create_time": "1465727958",
+                                "status": "1",
+                                "to_comment_id": "0"
+                            }
+                        ]
+                    }
+                },
+```
+filter是过滤当前信号
+ return [[dictTmp objectForKey:@"status"] isEqualToString:@"success"];
+ 当当前status 字段为success时，当前请求成功，否则失败。失败后不再进行下一步。
+
+map 映射当前信号。
+网络请求过来的数据是json类型，不过我们需要的是模型数组。然后在map中。我们格式化当前json数据。
+
+映射操作完成之后，subscribeNext执行应设置后的操作。
 
